@@ -3,7 +3,7 @@ from functools import partial
 
 class DatabaseBuilder():
 
-    def initialize_database(self, db_name):
+    def _insert_tables(self, db_name):
         with sqlite3.connect(db_name) as con:
             cur = con.cursor()
 
@@ -34,7 +34,7 @@ class DatabaseBuilder():
             cur.execute("""CREATE TABLE gifs ("message_id"	INTEGER NOT NULL, uri)""")
             cur.execute("""CREATE TABLE share ("message_id"	INTEGER NOT NULL, link, share_text)""")
 
-    def path_to_dict(self, file_path):
+    def _path_to_dict(self, file_path):
         #Thank you Martijn Pieters!!
         #https://stackoverflow.com/questions/50008296/facebook-json-badly-encoded
 
@@ -47,11 +47,11 @@ class DatabaseBuilder():
         return data
 
     #Will read a json file and populate the database based on that files content.
-    def populate_db(self, file_path, db_name):
+    def _populate_database(self, file_path, db_name):
         con = sqlite3.connect(db_name)
         cur = con.cursor()
 
-        json_object = self.path_to_dict(file_path)
+        json_object = self._path_to_dict(file_path)
         
         cur.execute("""SELECT max(message_id) FROM messages""")
         result = cur.fetchone()
@@ -134,7 +134,7 @@ class DatabaseBuilder():
                     cur.execute("""INSERT INTO audiofiles (message_id, uri, creation_timestamp) VALUES (?, ?, ?)""", [current_message_id, audiofile["uri"], creation_timestamp])
 
             #Populate gifs table
-            if(audioclip_count > 0 and "gifs" in message):
+            if(gif_count > 0 and "gifs" in message):
                 for gif in message["gifs"]:
                     cur.execute("""INSERT INTO gifs (message_id, uri) VALUES (?, ?)""", [current_message_id, gif["uri"]])
 
@@ -149,23 +149,40 @@ class DatabaseBuilder():
         cur.execute("""COMMIT""")
         con.close()
 
-    def __init__(self, conversation_location, db_name="database.db", force=True):
-        self.conversation_location = conversation_location
-        self.db_name = db_name
+    def _populate_participants(self):
+        con = sqlite3.connect(self.db_name)
+        cur = con.cursor()
+        cur.execute("SELECT DISTINCT user FROM subscriptions ORDER BY user")
+        results = cur.fetchall()
+        participant_id = 1
 
-        if(glob.glob(db_name)): #Should only be used for debugging purposes. TODO: remove.
-            if(force):
-                os.remove(db_name)
+        cur.execute("""BEGIN TRANSACTION""")
+        for participant in results:
+            cur.execute("""INSERT INTO participants (participant_id, name) VALUES (?, ?)""", (participant_id, participant[0]))
+            participant_id += 1
+        cur.execute("""COMMIT""")
+
+    def _get_conversation_jsons(self):
+        file_paths = glob.glob(f"{self.conversation_location}*.json")
+        #Sort files by id, 'message_<id>.json', instead of alphabetical order.
+        return sorted(file_paths, key=lambda file: int(file.split("/")[-1].split("_")[-1].split(".")[0]))
+
+    def create_database(self, overwrite=False):
+        if(glob.glob(self.db_name)):
+            if(overwrite):
+                os.remove(self.db_name)
             else:
-                print("Database with same name was already found.")
+                print("Database with same name was already found. Aborting...")
                 return
             
-        self.initialize_database(db_name)
-
-        file_paths = glob.glob(f"{conversation_location}*.json")
-        #Sort files by id, 'message_<id>.json', instead of alphabetical order.
-        file_paths = sorted(file_paths, key=lambda file: int(file.split("/")[-1].split("_")[-1].split(".")[0]))
+        self._insert_tables(self.db_name)
+        file_paths = self._get_conversation_jsons()
 
         for file_path in file_paths:
             print(f"Parsing and adding {file_path.split('/')[-1]} to the database.")
-            self.populate_db(file_path, db_name)
+            self._populate_database(file_path, self.db_name)
+        self._populate_participants()
+
+    def __init__(self):
+        self.conversation_location = os.getenv("CONVERSATION_PATH")
+        self.db_name = os.getenv("DATABASE_NAME")
